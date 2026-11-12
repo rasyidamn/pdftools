@@ -250,3 +250,149 @@ class AuditStore:
             return True
         except Exception:
             return False
+
+
+
+    def _filters(self, stmt, username, status, action, since, until):
+        if username:
+            stmt = stmt.where(func.lower(AuditLog.username) == username.lower())
+        if status:
+            stmt = stmt.where(AuditLog.status == status)
+        if action:
+            stmt = stmt.where(AuditLog.action == action)
+        if since:
+            stmt = stmt.where(AuditLog.ts_utc >= since)
+        if until:
+            stmt = stmt.where(AuditLog.ts_utc < until)
+        return stmt
+
+    def _files_for(self, s: Session, ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        out: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+        if not ids:
+            return out
+        rows = s.execute(
+            select(AuditFile).where(AuditFile.audit_id.in_(ids)).order_by(
+                AuditFile.audit_id, AuditFile.position
+            )
+        ).scalars()
+        for f in rows:
+            out[f.audit_id].append(
+                {
+                    "position": f.position,
+                    "file_name": f.file_name,
+                    "size_bytes": f.size_bytes,
+                    "sha256": f.sha256,
+                    "pages": f.pages,
+                }
+            )
+        return out
+
+    @staticmethod
+    def _row_dict(r: AuditLog, files: list[dict[str, Any]]) -> dict[str, Any]:
+        d = {c: getattr(r, c) for c in COLUMNS}
+        d["id"] = r.id
+        d["files"] = files
+        return d
+
+    def query(
+        self,
+        *,
+        username: str | None = None,
+        status: str | None = None,
+        action: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        with self._sessions() as s:
+            total = s.execute(
+                self._filters(select(func.count(AuditLog.id)), username, status, action, since, until)
+            ).scalar_one()
+            rows = (
+                s.execute(
+                    self._filters(select(AuditLog), username, status, action, since, until)
+                    .order_by(AuditLog.id.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+                .scalars()
+                .all()
+            )
+            files = self._files_for(s, [r.id for r in rows])
+            return total, [self._row_dict(r, files[r.id]) for r in rows]
+
+    def iter_rows(
+        self,
+        *,
+        username=None,
+        status=None,
+        action=None,
+        since=None,
+        until=None,
+        batch: int = 500,
+        max_rows: int = 100_000,
+    ) -> Iterator[dict[str, Any]]:
+        last = 0
+        sent = 0
+        with self._sessions() as s:
+            while sent < max_rows:
+                rows = (
+                    s.execute(
+                        self._filters(select(AuditLog), username, status, action, since, until)
+                        .where(AuditLog.id > last)
+                        .order_by(AuditLog.id)
+                        .limit(min(batch, max_rows - sent))
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not rows:
+                    return
+                files = self._files_for(s, [r.id for r in rows])
+                for r in rows:
+                    yield self._row_dict(r, files[r.id])
+                    sent += 1
+                last = rows[-1].id
+
+    # --------------------------------------------------------------- verifikasi
+    def verify_chain(self, batch: int = 500) -> VerifyResult:
+        problems: list[dict[str, Any]] = []
+        prev = GENESIS
+        last_id = 0
+        checked = 0
+        head_id: int | None = None
+        head_hash: str | None = None
+        with self._sessions() as s:
+            while True:
+                rows = (
+                    s.execute(
+                        select(AuditLog).where(AuditLog.id > last_id).order_by(AuditLog.id).limit(batch)
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not rows:
+                    break
+                files = self._files_for(s, [r.id for r in rows])
+                for r in rows:
+                    checked += 1
+                    if r.prev_hash != prev:
+                        problems.append({"id": r.id, "type": "BROKEN_LINK"})
+                    if r.row_hash != chain_hash(r.prev_hash, r.payload_json):
+                        problems.append({"id": r.id, "type": "BAD_HASH"})
+                    try:
+                        payload = json.loads(r.payload_json)
+                    except ValueError:
+                        problems.append({"id": r.id, "type": "BAD_PAYLOAD_JSON"})
+                        payload = None
+                    if payload is not None:
+                        diff = [c for c in COLUMNS if payload.get(c) != getattr(r, c)]
+                        if diff:
+                            problems.append({"id": r.id, "type": "COLUMN_MISMATCH", "fields": diff})
+                        if payload.get("files") != files[r.id]:
+                            problems.append({"id": r.id, "type": "FILES_MISMATCH"})
+                    prev = r.row_hash
+                    head_id, head_hash = r.id, r.row_hash
+                last_id = rows[-1].id
+        return VerifyResult(not problems, checked, problems, head_id, head_hash)
