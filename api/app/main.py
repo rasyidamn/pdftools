@@ -314,6 +314,111 @@ def create_app(
             background=BackgroundTask(drop_output),
         )
 
+        # ------------------------------------------------------------ admin
+    async def require_admin(request: Request, ident: Identity = Depends(get_identity)) -> Identity:
+        if ident.username.lower() not in admins:
+            await audit_best_effort(
+                make_event(
+                    ident, request.state.request_id, "ADMIN_DENIED", "REJECTED", time.perf_counter(),
+                    error_code="NOT_ADMIN", detail=request.url.path,
+                )
+            )
+            raise ApiError(403, "FORBIDDEN", "Halaman ini khusus admin.")
+        return ident
+
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_page(ident: Identity = Depends(require_admin)):
+        return (STATIC_DIR / "admin.html").read_text("utf-8")
+
+    # ------------------------------------------------------------ admin audit
+    def filters(
+        username: str | None, status: str | None, action: str | None, since: str | None, until: str | None
+    ) -> dict:
+        return {"username": username, "status": status, "action": action, "since": since, "until": until}
+
+    def describe(f: dict) -> str:
+        parts = [f"{k}={v}" for k, v in f.items() if v]
+        return ("filter: " + ", ".join(parts)) if parts else "tanpa filter"
+
+    @app.get("/admin/audit")
+    async def admin_audit(
+        request: Request,
+        ident: Identity = Depends(require_admin),
+        username: str | None = Query(None, max_length=160),
+        status: str | None = Query(None, pattern=STATUSES),
+        action: str | None = Query(None, pattern=ACTIONS),
+        since: str | None = Query(None, pattern=DATE_RE),
+        until: str | None = Query(None, pattern=DATE_RE),
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ):
+        f = filters(username, status, action, since, until)
+        await audit_required(
+            make_event(
+                ident, request.state.request_id, "AUDIT_VIEW", "SUCCESS", time.perf_counter(),
+                detail=f"{describe(f)}, limit={limit}, offset={offset}",
+            )
+        )
+        total, rows = await run_in_threadpool(lambda: audit.query(**f, limit=limit, offset=offset))
+        return {"total": total, "limit": limit, "offset": offset, "rows": rows}
+
+    def csv_cell(v) -> str:
+        s = "" if v is None else str(v)
+        return ("'" + s) if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+    CSV_HEADER = [
+        "id", "ts_utc", "username", "client_ip", "action", "status", "error_code", "error_message",
+        "file_count", "total_bytes_in", "output_pages", "output_bytes", "output_sha256",
+        "duration_ms", "engine", "engine_version", "request_id", "files",
+    ]
+
+    def csv_stream(rows: Iterator[dict]) -> Iterator[str]:
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(CSV_HEADER)
+        yield "\ufeff" + buf.getvalue()
+        for r in rows:
+            buf.seek(0)
+            buf.truncate(0)
+            r = dict(r)
+            r["files"] = " ; ".join(
+                f"{x['position']}. {x['file_name']} | {x['size_bytes']}B | {x['sha256']}" for x in r["files"]
+            )
+            w.writerow([csv_cell(r.get(c)) for c in CSV_HEADER])
+            yield buf.getvalue()
+
+    @app.get("/admin/audit.csv")
+    async def admin_audit_csv(
+        request: Request,
+        ident: Identity = Depends(require_admin),
+        username: str | None = Query(None, max_length=160),
+        status: str | None = Query(None, pattern=STATUSES),
+        action: str | None = Query(None, pattern=ACTIONS),
+        since: str | None = Query(None, pattern=DATE_RE),
+        until: str | None = Query(None, pattern=DATE_RE),
+    ):
+        f = filters(username, status, action, since, until)
+        await audit_required(
+            make_event(
+                ident, request.state.request_id, "AUDIT_EXPORT", "SUCCESS", time.perf_counter(),
+                detail=describe(f),
+            )
+        )
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        return StreamingResponse(
+            csv_stream(audit.iter_rows(**f)),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="audit-{stamp}.csv"'},
+        )
+
+    @app.get("/admin/verify")
+    async def admin_verify(request: Request, ident: Identity = Depends(require_admin)):
+        await audit_required(
+            make_event(ident, request.state.request_id, "AUDIT_VERIFY", "SUCCESS", time.perf_counter())
+        )
+        result = await run_in_threadpool(audit.verify_chain)
+        return result.as_dict()
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 
