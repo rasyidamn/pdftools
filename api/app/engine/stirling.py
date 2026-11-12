@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO, Sequence
 
-import httpx
+import httpx2
 
 from .base import EngineError
 
@@ -20,9 +20,9 @@ class StirlingEngine:
         self, base_url: str, timeout_s: float = 300.0, version_label: str = "unknown"
     ):
         self._label = version_label
-        self._client = httpx.Client(
+        self._client = httpx2.Client(
             base_url=base_url,
-            timeout=httpx.Timeout(timeout_s, connect=5.0),
+            timeout=httpx2.Timeout(timeout_s, connect=5.0),
             follow_redirects=False,
         )
 
@@ -32,7 +32,7 @@ class StirlingEngine:
     def health(self) -> bool:
         try:
             return self._client.get(STATUS_PATH, timeout=3.0).status_code == 200
-        except httpx.HTTPError:
+        except httpx2.HTTPError:
             return False
 
     def merge(self, files: Sequence[tuple[str, BinaryIO]], dest: Path) -> None:
@@ -54,11 +54,11 @@ class StirlingEngine:
                 with open(dest, "wb") as out:
                     for chunk in r.iter_bytes():
                         out.write(chunk)
-        except httpx.TimeoutException as exc:
+        except httpx2.TimeoutException as exc:
             raise EngineError(
                 "ENGINE_TIMEOUT", type(exc).__name__, http_status=504
             ) from exc
-        except httpx.TransportError as exc:
+        except httpx2.TransportError as exc:
             raise EngineError(
                 "ENGINE_UNAVAILABLE", type(exc).__name__, http_status=503
             ) from exc

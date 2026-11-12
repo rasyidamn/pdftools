@@ -4,7 +4,7 @@ version= "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.162.5",
-    "httpx>=0.28.1",
+    "httpx2>=2.16.0",
     "psycopg[binary]>=3.3.8",
     "pydantic>=2.14.3",
     "pypdf>=7.0.1",
