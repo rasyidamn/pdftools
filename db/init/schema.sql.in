@@ -1,0 +1,67 @@
+-- Skema audit PostgreSQL. Dijalankan SEKALI oleh 01-init.sh saat volume database masih kosong.
+-- Variabel :app_pw berisi password akun aplikasi (dari .env, bukan ditulis di sini).
+--
+-- Prinsip: akun aplikasi (pdftool_app) hanya boleh INSERT dan SELECT.
+-- Trigger menolak UPDATE/DELETE/TRUNCATE sebagai lapisan kedua.
+
+CREATE ROLE pdftool_app LOGIN PASSWORD :'app_pw';
+
+CREATE TABLE audit_log (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    ts_utc          VARCHAR(32)  NOT NULL,
+    request_id      VARCHAR(64)  NOT NULL,
+    username        VARCHAR(160) NOT NULL,
+    client_ip       VARCHAR(64)  NOT NULL,
+    user_agent      VARCHAR(200) NOT NULL,
+    action          VARCHAR(32)  NOT NULL,
+    status          VARCHAR(16)  NOT NULL,
+    error_code      VARCHAR(48),
+    error_message   VARCHAR(500),
+    detail          VARCHAR(500),
+    file_count      INTEGER      NOT NULL,
+    total_bytes_in  BIGINT       NOT NULL,
+    output_bytes    BIGINT,
+    output_sha256   VARCHAR(64),
+    output_pages    INTEGER,
+    duration_ms     INTEGER      NOT NULL,
+    engine          VARCHAR(32),
+    engine_version  VARCHAR(64),
+    app_version     VARCHAR(32)  NOT NULL,
+    prev_hash       VARCHAR(64)  NOT NULL,
+    row_hash        VARCHAR(64)  NOT NULL,
+    payload_json    TEXT         NOT NULL
+);
+CREATE INDEX ix_audit_log_ts_utc   ON audit_log (ts_utc);
+CREATE INDEX ix_audit_log_username ON audit_log (username);
+CREATE INDEX ix_audit_log_status   ON audit_log (status);
+
+CREATE TABLE audit_file (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    audit_id    BIGINT       NOT NULL REFERENCES audit_log (id),
+    position    INTEGER      NOT NULL,
+    file_name   VARCHAR(255) NOT NULL,
+    size_bytes  BIGINT       NOT NULL,
+    sha256      VARCHAR(64)  NOT NULL,
+    pages       INTEGER
+);
+CREATE INDEX ix_audit_file_audit_id ON audit_file (audit_id);
+
+CREATE FUNCTION audit_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'tabel audit bersifat append-only (% ditolak)', TG_OP;
+END;
+$$;
+
+CREATE TRIGGER audit_log_no_change  BEFORE UPDATE OR DELETE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_append_only();
+CREATE TRIGGER audit_log_no_truncate BEFORE TRUNCATE ON audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_append_only();
+CREATE TRIGGER audit_file_no_change BEFORE UPDATE OR DELETE ON audit_file
+    FOR EACH ROW EXECUTE FUNCTION audit_append_only();
+CREATE TRIGGER audit_file_no_truncate BEFORE TRUNCATE ON audit_file
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_append_only();
+
+REVOKE ALL ON audit_log, audit_file FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO pdftool_app;
+GRANT SELECT, INSERT ON audit_log, audit_file TO pdftool_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pdftool_app;
