@@ -215,6 +215,105 @@ def create_app(
     async def index(ident: Identity = Depends(get_identity)):
         return (STATIC_DIR / "index.html").read_text("utf-8")
 
+        # ------------------------------------------------------------ merge
+    @app.post("/api/merge")
+    async def merge(
+        request: Request,
+        ident: Identity = Depends(get_identity),
+        files: list[UploadFile] | None = File(None),
+    ):
+        started = time.perf_counter()
+        rid = request.state.request_id
+        await run_in_threadpool(sweep_tmp)
+        entries: list[FileEntry] = []
+        uploads: list[tuple[str, UploadFile]] = []
+        total_bytes = 0
+
+        # 1) Validasi masukan -> REJECTED bila ada masalah
+        try:
+            if not files or len(files) < settings.min_files:
+                raise Reject("TOO_FEW_FILES", f"Pilih minimal {settings.min_files} file PDF.")
+            if len(files) > settings.max_files:
+                raise Reject("TOO_MANY_FILES", f"Maksimal {settings.max_files} file per proses.", 413)
+            problems: list[tuple[str, tuple[str, str, int]]] = []
+            for i, f in enumerate(files, 1):
+                name = safe_filename(f.filename)
+                info = await run_in_threadpool(inspect_pdf, f.file, settings.max_file_bytes, settings.max_pages)
+                entries.append(FileEntry(i, name, info.size, info.sha256, info.pages))
+                uploads.append((name, f))
+                total_bytes += info.size
+                if info.problem:
+                    problems.append((name, info.problem))
+            if problems:
+                name, (code, msg, status) = problems[0]
+                extra = f" (+{len(problems) - 1} file bermasalah lain)" if len(problems) > 1 else ""
+                raise Reject(code, f"{name}: {msg}{extra}", status)
+            if total_bytes > settings.max_total_bytes:
+                raise Reject("TOTAL_TOO_LARGE", f"Total ukuran melebihi {settings.max_total_bytes // MB} MB.", 413)
+            total_pages = sum(e.pages or 0 for e in entries)
+            if total_pages > settings.max_pages:
+                raise Reject("TOO_MANY_PAGES", f"Total halaman melebihi {settings.max_pages}.")
+        except Reject as r:
+            await audit_best_effort(
+                make_event(
+                    ident, rid, "MERGE", "REJECTED", started,
+                    error_code=r.code, error_message=r.message, files=entries, total_bytes_in=total_bytes,
+                )
+            )
+            raise ApiError(r.status, r.code, r.message)
+
+        # 2) Panggil mesin
+        out_path = tmp / f"{rid}.pdf"
+
+        def drop_output() -> None:
+            out_path.unlink(missing_ok=True)
+
+        async def fail(code: str, detail: str, status: int, message: str):
+            drop_output()
+            await audit_best_effort(
+                make_event(
+                    ident, rid, "MERGE", "FAILED", started,
+                    error_code=code, error_message=detail, files=entries, total_bytes_in=total_bytes,
+                )
+            )
+            raise ApiError(status, code, message)
+
+        generic = f"Penggabungan gagal. Pastikan semua file PDF tidak rusak. Jika berulang, hubungi tim IT (kode {rid[:8]})."
+        try:
+            for _, f in uploads:
+                f.file.seek(0)
+            async with limiter:
+                await run_in_threadpool(engine.merge, [(n, f.file) for n, f in uploads], out_path)
+            out_size, out_sha, out_pages = await run_in_threadpool(verify_output, out_path, total_pages)
+        except EngineError as e:
+            await fail(e.code, e.detail, e.http_status, ENGINE_MESSAGES.get(e.code, generic))
+        except ApiError:
+            raise
+        except Exception as e:  # kesalahan tak terduga
+            log.exception("Kesalahan tak terduga saat merge req=%s", rid)
+            await fail("INTERNAL_ERROR", f"{type(e).__name__}", 500, generic)
+
+        # 3) Audit WAJIB berhasil sebelum hasil diserahkan (gagal-aman)
+        try:
+            await audit_required(
+                make_event(
+                    ident, rid, "MERGE", "SUCCESS", started,
+                    files=entries, total_bytes_in=total_bytes,
+                    output_bytes=out_size, output_sha256=out_sha, output_pages=out_pages,
+                )
+            )
+        except ApiError:
+            drop_output()
+            raise
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        return FileResponse(
+            out_path,
+            media_type="application/pdf",
+            filename=f"gabungan-{stamp}.pdf",
+            background=BackgroundTask(drop_output),
+        )
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 
