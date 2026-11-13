@@ -73,3 +73,30 @@ def test_hanya_proxy_tepercaya(tmp_path):
 def test_konfigurasi_buruk_menolak_start(tmp_path):
     with pytest.raises(Exception):
         create_app(Settings(gateway_secret="pendek", database_url="sqlite://", admin_users=(ADMIN,)))
+
+def test_parameter_salah_format_rumah(tmp_path):
+    r = buat(tmp_path).get("/admin/audit?limit=0", headers=h(ADMIN))
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "BAD_REQUEST" and "x-request-id" in r.headers
+
+
+def test_mesin_ditutup_saat_aplikasi_berhenti(tmp_path):
+    class MesinTutup(PypdfEngine):
+        ditutup = False
+
+        def close(self):
+            MesinTutup.ditutup = True
+
+    app = create_app(
+        Settings(
+            gateway_secret=SECRET,
+            database_url=f"sqlite:///{tmp_path / 'audit.db'}",
+            admin_users=(ADMIN,),
+            tmp_dir=str(tmp_path / "tmp"),
+            db_auto_create=True,
+        ),
+        engine=MesinTutup(),
+    )
+    with TestClient(app):
+        assert MesinTutup.ditutup is False
+    assert MesinTutup.ditutup is True

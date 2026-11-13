@@ -29,6 +29,9 @@ class StirlingEngine:
     def version(self) -> str:
         return self._label
 
+    def close(self) -> None:
+        self._client.close()
+
     def health(self) -> bool:
         try:
             return self._client.get(STATUS_PATH, timeout=3.0).status_code == 200

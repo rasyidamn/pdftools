@@ -9,12 +9,14 @@ import os
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
 from fastapi import Depends, FastAPI, File, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -65,7 +67,17 @@ def create_app(
         leftover.unlink(missing_ok=True)
     limiter = asyncio.Semaphore(settings.max_concurrent)
 
-    app = FastAPI(title="PDF Tool", version=APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        close = getattr(engine, "close", None)
+        if callable(close):
+            close()
+
+    app = FastAPI(
+        title="PDF Tool", version=APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None,
+        lifespan=lifespan,
+    )
     app.state.settings = settings
     app.state.audit = audit
     app.state.engine = engine
@@ -185,6 +197,25 @@ def create_app(
     async def api_error_handler(request: Request, exc: ApiError):
         rid = getattr(request.state, "request_id", "-")
         return error_json(exc.status, exc.code, exc.message, rid)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        """Masukan tidak sesuai format: pesan ramah untuk staf, detail teknis hanya ke audit."""
+        rid = getattr(request.state, "request_id", "-")
+        if request.method == "POST" and request.url.path == "/api/merge":
+            try:
+                ident = identity_from(request)
+            except ApiError as e:
+                return error_json(e.status, e.code, e.message, rid)
+            fields = ", ".join(sorted({".".join(str(x) for x in err.get("loc", ())) for err in exc.errors()}))
+            await audit_best_effort(
+                make_event(
+                    ident, rid, "MERGE", "REJECTED", time.perf_counter(),
+                    error_code="BAD_REQUEST", error_message=f"validasi gagal: {fields}",
+                )
+            )
+            return error_json(422, "BAD_REQUEST", "Kiriman tidak valid. Pilih ulang file PDF lalu coba lagi.", rid)
+        return error_json(422, "BAD_REQUEST", "Permintaan tidak valid. Periksa isian lalu coba lagi.", rid)
 
     # ------------------------------------------------------------ halaman
     @app.get("/api/health")

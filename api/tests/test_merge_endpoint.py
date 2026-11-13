@@ -252,3 +252,14 @@ def test_gagal_aman_bila_audit_tidak_bisa_ditulis(env, monkeypatch):
     assert r.status_code == 503 and r.json()["detail"]["code"] == "AUDIT_UNAVAILABLE"
     assert not r.headers["content-type"].startswith("application/pdf")
     assert jumlah(app, USER) == 0  # dan fixture env memastikan tidak ada file sementara tertinggal
+
+def test_kiriman_tidak_valid_pesan_ramah_dan_teraudit(env):
+    client, app = env()
+    # 'files' dikirim sebagai teks biasa, bukan file -> gagal validasi FastAPI
+    r = client.post("/api/merge", data={"files": "bukan-file"}, headers=h())
+    assert r.status_code == 422
+    body = r.json()
+    assert body["detail"]["code"] == "BAD_REQUEST" and "loc" not in str(body)
+    row, _ = fetch(app, r.headers["x-request-id"])[0]
+    assert row["status"] == "REJECTED" and row["error_code"] == "BAD_REQUEST"
+    assert "files" in row["error_message"]
