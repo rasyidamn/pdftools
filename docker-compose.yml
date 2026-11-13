@@ -1,0 +1,76 @@
+# PDF Merge Gateway. Salin .env.example menjadi .env, isi nilainya, lalu: docker compose up -d --build
+# Hanya 'api' yang dipublikasikan, dan hanya di IP VM (API_BIND_IP). Stirling dan db tidak punya port publik.
+# Ingat: port Docker melewati ufw; batasi juga lewat chain DOCKER-USER (lihat docs/deploy.md).
+
+name: pdftool
+
+services:
+  api:
+    build: ./api
+    image: pdftool-api:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${API_BIND_IP:?isi API_BIND_IP di .env}:${API_PORT:-8000}:8000"
+    environment:
+      GATEWAY_SECRET: ${GATEWAY_SECRET:?isi GATEWAY_SECRET di .env}
+      ADMIN_USERS: ${ADMIN_USERS:?isi ADMIN_USERS di .env}
+      DATABASE_URL: postgresql+psycopg://pdftool_app:${APP_DB_PASSWORD:?isi APP_DB_PASSWORD di .env}@db:5432/${POSTGRES_DB:-pdftool}
+      ENGINE: ${ENGINE:-stirling}
+      STIRLING_URL: http://stirling:8080
+      ENGINE_VERSION_LABEL: ${STIRLING_IMAGE:-stirlingtools/stirling-pdf:latest}
+      ENGINE_TIMEOUT_S: ${ENGINE_TIMEOUT_S:-300}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
+      MAX_FILES: ${MAX_FILES:-20}
+      MAX_FILE_MB: ${MAX_FILE_MB:-50}
+      MAX_TOTAL_MB: ${MAX_TOTAL_MB:-100}
+      MAX_PAGES: ${MAX_PAGES:-2000}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    read_only: true
+    tmpfs:
+      - /tmp:size=${API_TMP_SIZE:-2g},mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal, edge]
+
+  stirling:
+    image: ${STIRLING_IMAGE:-stirlingtools/stirling-pdf:latest}
+    restart: unless-stopped
+    environment:
+      DOCKER_ENABLE_SECURITY: "false"
+      SYSTEM_DEFAULTLOCALE: id-ID
+      SYSTEM_MAXFILESIZE: ${MAX_TOTAL_MB:-100}
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pdftool_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+      POSTGRES_DB: ${POSTGRES_DB:-pdftool}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+
+volumes:
+  pgdata: {}
+
+networks:
+  # Tanpa akses keluar: Stirling dan db tidak bisa dihubungi dari luar maupun menghubungi internet.
+  internal:
+    internal: true
+  # Hanya agar port api bisa dipublikasikan ke IP VM.
+  edge: {}
