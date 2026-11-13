@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gabung PDF</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <h1>Gabung PDF</h1>
+    <nav>
+      <span id="who" class="muted"></span>
+      <a id="admin-link" href="/admin" hidden>Halaman admin</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <h2>1. Pilih file PDF</h2>
+      <label id="drop" class="drop" for="picker">
+        <span class="drop-title">Tarik file PDF ke sini</span>
+        <span class="muted">atau klik untuk memilih dari komputer</span>
+        <input id="picker" type="file" accept="application/pdf,.pdf" multiple>
+      </label>
+      <p id="limits" class="muted small"></p>
+    </section>
+
+    <section class="card">
+      <div class="row-between">
+        <h2>2. Atur urutan</h2>
+        <button id="clear" type="button" class="link" hidden>Kosongkan</button>
+      </div>
+      <p id="empty" class="muted">Belum ada file. Urutan di daftar ini = urutan halaman di hasil.</p>
+      <ol id="list" class="files"></ol>
+      <p id="summary" class="muted small"></p>
+    </section>
+
+    <section class="card">
+      <h2>3. Gabungkan</h2>
+      <button id="go" type="button" class="primary" disabled>Gabungkan &amp; unduh</button>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <template id="file-row">
+    <li class="file">
+      <span class="pos"></span>
+      <span class="name"></span>
+      <span class="size muted"></span>
+      <span class="actions">
+        <button type="button" class="icon up" title="Naikkan" aria-label="Naikkan">&#8593;</button>
+        <button type="button" class="icon down" title="Turunkan" aria-label="Turunkan">&#8595;</button>
+        <button type="button" class="icon remove" title="Hapus" aria-label="Hapus">&#10005;</button>
+      </span>
+    </li>
+  </template>
+</body>
+</html>

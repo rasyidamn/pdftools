@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin Audit</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <h1>Audit gabung PDF</h1>
+    <nav><a href="/">Kembali ke Gabung PDF</a></nav>
+  </header>
+
+  <main class="wrap wide">
+    <section class="card">
+      <h2>Integritas rantai audit</h2>
+      <p class="muted small">Salin <b>head hash</b> ke tempat lain secara berkala (mis. email atau catatan terpisah).
+        Penghapusan baris terakhir hanya bisa ketahuan dengan membandingkan nilai ini.</p>
+      <button id="verify" type="button">Periksa rantai</button>
+      <div id="verify-out" class="verify" hidden>
+        <p id="verify-summary"></p>
+        <p class="small">Head: <code id="head"></code>
+          <button id="copy-head" type="button" class="link">Salin</button></p>
+        <ul id="problems" class="small"></ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <form id="filters" class="filters">
+        <label>Pengguna <input name="username" maxlength="160" placeholder="DOMAIN\user"></label>
+        <label>Aksi
+          <select name="action">
+            <option value="">Semua</option>
+            <option>MERGE</option>
+            <option>AUDIT_VIEW</option>
+            <option>AUDIT_EXPORT</option>
+            <option>AUDIT_VERIFY</option>
+            <option>ADMIN_DENIED</option>
+          </select>
+        </label>
+        <label>Status
+          <select name="status">
+            <option value="">Semua</option>
+            <option>SUCCESS</option>
+            <option>FAILED</option>
+            <option>REJECTED</option>
+          </select>
+        </label>
+        <label>Dari tanggal <input name="since" type="date"></label>
+        <label>Sampai tanggal <input name="until" type="date"></label>
+        <span class="filter-actions">
+          <button type="submit" class="primary">Tampilkan</button>
+          <a id="csv" href="/admin/audit.csv" class="button">Ekspor CSV</a>
+        </span>
+      </form>
+      <p class="muted small">Waktu dalam UTC. Setiap tampilan dan ekspor juga tercatat di audit.</p>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <div class="table-wrap">
+        <table id="table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Waktu (UTC)</th><th>Pengguna</th><th>IP</th><th>Aksi</th><th>Status</th>
+              <th>Kode</th><th>File</th><th>Halaman</th><th>Durasi</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="prev" type="button">&#8592; Sebelumnya</button>
+        <span id="page" class="muted"></span>
+        <button id="next" type="button">Berikutnya &#8594;</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
