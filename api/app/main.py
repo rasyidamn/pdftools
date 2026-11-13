@@ -258,6 +258,7 @@ def create_app(
         await run_in_threadpool(sweep_tmp)
         entries: list[FileEntry] = []
         uploads: list[tuple[str, UploadFile]] = []
+        expected_sizes: list[tuple[int, int]] = []
         total_bytes = 0
 
         # 1) Validasi masukan -> REJECTED bila ada masalah
@@ -273,6 +274,7 @@ def create_app(
                 entries.append(FileEntry(i, name, info.size, info.sha256, info.pages))
                 uploads.append((name, f))
                 total_bytes += info.size
+                expected_sizes.extend(info.page_sizes)
                 if info.problem:
                     problems.append((name, info.problem))
             if problems:
@@ -315,7 +317,9 @@ def create_app(
                 f.file.seek(0)
             async with limiter:
                 await run_in_threadpool(engine.merge, [(n, f.file) for n, f in uploads], out_path)
-            out_size, out_sha, out_pages = await run_in_threadpool(verify_output, out_path, total_pages)
+            out_size, out_sha, out_pages = await run_in_threadpool(
+                verify_output, out_path, total_pages, expected_sizes
+            )
         except EngineError as e:
             await fail(e.code, e.detail, e.http_status, ENGINE_MESSAGES.get(e.code, generic))
         except ApiError:

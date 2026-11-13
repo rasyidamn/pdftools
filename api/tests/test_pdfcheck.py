@@ -89,3 +89,31 @@ def test_keluaran_buruk(tmp_path):
     with pytest.raises(EngineError) as e:
         verify_output(p, 4)
     assert e.value.code == "OUTPUT_MISMATCH"
+
+
+def pdf_lebar(widths):
+    w = PdfWriter()
+    for x in widths:
+        w.add_blank_page(width=x, height=200)
+    buf = BytesIO()
+    w.write(buf)
+    return buf.getvalue()
+
+
+def test_ukuran_halaman_dicatat():
+    assert check(pdf_lebar([101, 202])).page_sizes == [(101, 200), (202, 200)]
+
+
+def test_urutan_halaman_sesuai(tmp_path):
+    p = tmp_path / "o.pdf"
+    p.write_bytes(pdf_lebar([101, 202, 303]))
+    _, _, pages = verify_output(p, 3, [(101, 200), (202, 200), (303, 200)])
+    assert pages == 3
+
+
+def test_urutan_halaman_tertukar(tmp_path):
+    p = tmp_path / "o.pdf"
+    p.write_bytes(pdf_lebar([303, 101, 202]))
+    with pytest.raises(EngineError) as e:
+        verify_output(p, 3, [(101, 200), (202, 200), (303, 200)])
+    assert e.value.code == "OUTPUT_ORDER" and "halaman 1" in e.value.detail

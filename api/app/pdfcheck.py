@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
@@ -11,6 +11,14 @@ from pypdf import PdfReader
 from .engine.base import EngineError
 
 CHUNK = 1024 * 1024
+SIZE_TOLERANCE = 1  # poin; selisih pembulatan antar-mesin
+
+PageSize = tuple[int, int]
+
+
+def page_sizes(reader: PdfReader) -> list[PageSize]:
+    """Ukuran (lebar, tinggi) tiap halaman dari mediabox, dibulatkan ke poin terdekat."""
+    return [(round(float(p.mediabox.width)), round(float(p.mediabox.height))) for p in reader.pages]
 
 
 @dataclass
@@ -19,6 +27,7 @@ class Inspected:
     sha256: str
     pages: int | None
     problem: tuple[str, str, int] | None  # (kode, pesan untuk staf, status HTTP)
+    page_sizes: list[PageSize] = field(default_factory=list)
 
 
 def inspect_pdf(fp: BinaryIO, max_file_bytes: int, max_pages: int) -> Inspected:
@@ -58,7 +67,8 @@ def inspect_pdf(fp: BinaryIO, max_file_bytes: int, max_pages: int) -> Inspected:
                 "PASSWORD_PROTECTED",
                 "PDF ini terkunci atau terenkripsi. Buka kuncinya lebih dulu.",
             )
-        pages = len(reader.pages)
+        sizes = page_sizes(reader)
+        pages = len(sizes)
     except Exception:
         return bad("CORRUPT_PDF", "PDF rusak atau tidak bisa dibaca.")
     if pages == 0:
@@ -66,11 +76,17 @@ def inspect_pdf(fp: BinaryIO, max_file_bytes: int, max_pages: int) -> Inspected:
     if pages > max_pages:
         return bad("TOO_MANY_PAGES", f"Jumlah halaman melebihi batas {max_pages}.")
     fp.seek(0)
-    return Inspected(size, sha, pages, None)
+    return Inspected(size, sha, pages, None, sizes)
 
 
-def verify_output(path: Path, expected_pages: int) -> tuple[int, str, int]:
-    """Periksa hasil dari mesin. Mengembalikan (ukuran, sha256, jumlah halaman)."""
+def verify_output(
+    path: Path, expected_pages: int, expected_sizes: list[PageSize] | None = None
+) -> tuple[int, str, int]:
+    """Periksa hasil dari mesin. Mengembalikan (ukuran, sha256, jumlah halaman).
+
+    Bila `expected_sizes` diberikan, ukuran tiap halaman hasil harus sama dengan urutan
+    halaman masukan. Ini menangkap mesin yang mengubah urutan file.
+    """
     try:
         size = path.stat().st_size
     except FileNotFoundError as exc:
@@ -87,7 +103,8 @@ def verify_output(path: Path, expected_pages: int) -> tuple[int, str, int]:
             digest.update(chunk)
         fp.seek(0)
         try:
-            pages = len(PdfReader(fp, strict=False).pages)
+            sizes = page_sizes(PdfReader(fp, strict=False))
+            pages = len(sizes)
         except Exception as exc:
             raise EngineError("ENGINE_BAD_OUTPUT", "keluaran tidak bisa dibaca", 502) from exc
     if pages != expected_pages:
@@ -96,4 +113,12 @@ def verify_output(path: Path, expected_pages: int) -> tuple[int, str, int]:
             f"halaman hasil {pages}, seharusnya {expected_pages}",
             502,
         )
+    if expected_sizes is not None:
+        for i, (got, want) in enumerate(zip(sizes, expected_sizes), 1):
+            if abs(got[0] - want[0]) > SIZE_TOLERANCE or abs(got[1] - want[1]) > SIZE_TOLERANCE:
+                raise EngineError(
+                    "OUTPUT_ORDER",
+                    f"halaman {i} berukuran {got[0]}x{got[1]}, seharusnya {want[0]}x{want[1]}",
+                    502,
+                )
     return size, digest.hexdigest(), pages

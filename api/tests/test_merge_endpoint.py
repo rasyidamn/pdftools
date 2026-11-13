@@ -87,6 +87,14 @@ class BuangHalaman(PypdfEngine):
             w.write(f)
 
 
+class Terbalik(PypdfEngine):
+    """Mesin tiruan yang menggabungkan file dalam urutan terbalik."""
+    name = "terbalik"
+
+    def merge(self, files, dest):
+        super().merge(list(reversed(files)), dest)
+
+
 @pytest.fixture
 def env(tmp_path):
     def buat(engine=None, **over):
@@ -263,3 +271,13 @@ def test_kiriman_tidak_valid_pesan_ramah_dan_teraudit(env):
     row, _ = fetch(app, r.headers["x-request-id"])[0]
     assert row["status"] == "REJECTED" and row["error_code"] == "BAD_REQUEST"
     assert "files" in row["error_message"]
+
+
+def test_urutan_salah_dari_mesin_ditolak(env):
+    client, app = env(Terbalik())
+    r = client.post("/api/merge", files=upload(C, A, B), headers=h())
+    assert r.status_code == 502 and r.headers["content-type"].startswith("application/json")
+    assert "OUTPUT_ORDER" not in r.json()["detail"]["message"]  # detail mesin tidak untuk staf
+    (row, files), = fetch(app, r.headers["x-request-id"])
+    assert row["status"] == "FAILED" and row["error_code"] == "OUTPUT_ORDER"
+    assert len(files) == 3
